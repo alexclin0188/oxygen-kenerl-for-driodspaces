@@ -1,0 +1,129 @@
+name: Build oxygen kernel 4.19 with DroidSpaces
+
+on:
+  workflow_dispatch:
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  KERNEL_DIR: android_kernel_xiaomi_oxygen
+  KBUILD_BUILD_USER: builder
+  KBUILD_BUILD_HOST: github-actions
+  MAKE_ARGS: ARCH=arm64 LLVM=1 LLVM_IAS=1 LD=ld.lld CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_COMPAT=arm-linux-gnueabi- CROSS_COMPILE_ARM32=arm-linux-gnueabi-
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout builder scripts
+        uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bc build-essential bison flex zip curl git wget \
+            libssl-dev zstd lld python3 patchutils ccache libc6-dev unzip
+
+      - name: Clone kernel source (halibw lineage-21, 4.19.313)
+        run: |
+          git clone --depth=1 -b lineage-21 https://github.com/halibw/android_kernel_xiaomi_oxygen.git "$KERNEL_DIR"
+
+      - name: Download Neutron Clang
+        run: |
+          TC_URL="$(curl -fsSL --retry 5 --retry-all-errors -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+            https://api.github.com/repos/Neutron-Toolchains/clang-build-catalogue/releases/latest \
+            | grep -o '"browser_download_url": *"[^"]*"' | head -n1 | cut -d '"' -f4)"
+          [ -n "$TC_URL" ] || { echo "Toolchain URL not found"; exit 1; }
+          mkdir -p "$KERNEL_DIR/clang"
+          curl -fL --retry 5 --retry-all-errors -o /tmp/clang.tar.zst "$TC_URL"
+          tar --zstd -C "$KERNEL_DIR/clang" -xf /tmp/clang.tar.zst
+          rm -f /tmp/clang.tar.zst
+          echo "$PWD/$KERNEL_DIR/clang/bin" >> "$GITHUB_PATH"
+
+      - name: Apply clang-compat Makefile flags (4.19 tree + modern clang)
+        working-directory: ${{ env.KERNEL_DIR }}
+        run: |
+          sed -i 's/-Wno-format-security/-Wno-format-security -Wno-declaration-after-statement -Wno-implicit-int -Wno-enum-conversion -Wno-default-const-init-var-unsafe -Wno-default-const-init-field-unsafe -Wno-misleading-indentation -Wno-unsequenced -Wno-sizeof-pointer-memaccess -Wno-implicit-function-declaration -Wno-implicit-enum-enum-cast/g' Makefile
+
+      - name: Generate kernel config with DroidSpaces fragment
+        working-directory: ${{ env.KERNEL_DIR }}
+        run: |
+          make O=out $MAKE_ARGS vendor/msm8953-perf_defconfig
+          cat "$GITHUB_WORKSPACE/droidspaces.config" >> out/.config
+          { yes "" 2>/dev/null || true; } | make O=out $MAKE_ARGS olddefconfig
+
+          echo "--- DroidSpaces sanity check ---"
+          FAIL=0
+          for opt in NAMESPACES PID_NS UTS_NS IPC_NS USER_NS NET_NS SYSVIPC POSIX_MQUEUE DEVTMPFS SECCOMP_FILTER CGROUP_PIDS CGROUP_DEVICE CFS_BANDWIDTH OVERLAY_FS VETH BRIDGE NF_CONNTRACK; do
+            if ! grep -q "^CONFIG_${opt}=y" out/.config; then
+              echo "::error::CONFIG_${opt} is not enabled in the final .config"
+              grep "CONFIG_${opt}" out/.config || true
+              FAIL=1
+            fi
+          done
+          if [ "$FAIL" != "0" ]; then exit 1; fi
+          echo "--- All DroidSpaces options enabled ---"
+
+      - name: Apply Droidspaces kernel patches (non-GKI)
+        working-directory: ${{ env.KERNEL_DIR }}
+        run: |
+          # 1) xt_qtaguid panic fix (only if the driver exists in this tree)
+          if [ -f net/netfilter/xt_qtaguid.c ]; then
+            echo "-- applying xt_qtaguid panic fix"
+            wget -qO- "https://raw.githubusercontent.com/ravindu644/Droidspaces-OSS/refs/heads/main/Documentation/resources/kernel-patches/non-GKI/01.fix_kernel_panic_in_xt_qtaguid.patch" \
+              | patch -s -p1 --fuzz=5 || { echo "::error::xt_qtaguid patch failed"; exit 1; }
+          fi
+          # 2) cgroup file prefix handling fix
+          echo "-- applying cgroup prefix fix"
+          wget -qO- "https://raw.githubusercontent.com/ravindu644/Droidspaces-OSS/refs/heads/main/Documentation/resources/kernel-patches/non-GKI/02.fix_restore%20cgroup%20file%20prefix%20handling%20.patch" \
+            | patch -s -p1 --fuzz=5 || { echo "::error::cgroup patch failed"; exit 1; }
+
+      - name: Compile the kernel
+        working-directory: ${{ env.KERNEL_DIR }}
+        run: |
+          set -o pipefail
+          make -j"$(nproc --all)" O=out $MAKE_ARGS 2>&1 | tee build.log
+          RC=$?
+          ls -la out/arch/arm64/boot/ || true
+          if [ ! -f out/arch/arm64/boot/Image.gz-dtb ]; then
+            echo "::error::Build finished but no Image.gz-dtb produced. First errors:"
+            grep -nE "error:|Error [0-9]|undefined reference|\*\*\*" build.log | head -n 40 || true
+            exit 1
+          fi
+          du -h out/arch/arm64/boot/Image.gz-dtb
+
+      - name: Collect artifacts
+        working-directory: ${{ env.KERNEL_DIR }}
+        run: |
+          mkdir -p "$GITHUB_WORKSPACE/dist/modules"
+          cp out/arch/arm64/boot/Image.gz-dtb "$GITHUB_WORKSPACE/dist/"
+          cp out/.config "$GITHUB_WORKSPACE/dist/config.txt"
+          cp build.log "$GITHUB_WORKSPACE/dist/build.log"
+          cp out/System.map "$GITHUB_WORKSPACE/dist/System.map" 2>/dev/null || true
+          find out -name '*.ko' -type f -exec cp {} "$GITHUB_WORKSPACE/dist/modules/" \;
+          echo "--- built modules ---"
+          ls -la "$GITHUB_WORKSPACE/dist/modules/" || true
+
+      - name: Package AnyKernel3 zip (secondary; needs TWRP/OrangeFox to flash)
+        run: |
+          git clone --depth=1 https://github.com/riarumoda/AnyKernel3 AnyKernel3
+          rm -rf AnyKernel3/.git
+          cp dist/Image.gz-dtb AnyKernel3/
+          sed -i 's/^device\.name1=.*/device.name1=oxygen/' AnyKernel3/anykernel.sh
+          sed -i 's/^supported\.versions=.*/supported.versions=11-17/' AnyKernel3/anykernel.sh
+          mkdir -p AnyKernel3/modules
+          if ls dist/modules/*.ko >/dev/null 2>&1; then
+            cp dist/modules/*.ko AnyKernel3/modules/
+          fi
+          ZIP="oxygen-4.19-droidspaces-$(date +%Y%m%d).zip"
+          (cd AnyKernel3 && zip -rq9 "../$ZIP" ./*)
+          cp "$ZIP" dist/
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: oxygen-droidspaces-kernel
+          path: dist/
+          if-no-files-found: error
