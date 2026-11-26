@@ -55,7 +55,7 @@ ROM：`lineage-21.0-20240216-UNOFFICIAL-oxygen.zip`（已在 `/Users/alex/work/r
    - `ls /proc/self/ns/` → 应出现 `pid uts ipc user net mnt cgroup`
    - DroidSpaces app → 不再报"内核不支持"，创建容器实测
 
-## 回滚
+## 回滚 
 
 - 内核：重刷 Magisk patched 的 ROM 原版 boot.img（备份在 oxygen-backup/）
 - 整个 ROM：重刷当前 5.4 WIP ROM（用户自行持有）或 oxygen-backup/boot-orig.img 对应的原厂系统
