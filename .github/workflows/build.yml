@@ -136,15 +136,14 @@ jobs:
           path: dist/
           if-no-files-found: error
 
-      - name: Push built kernel to artifacts branch
+      - name: Push built kernel to main branch dist-built/
         run: |
           cd "$GITHUB_WORKSPACE"
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git fetch origin artifacts || true
-          git checkout -B artifacts
-          git rm -rf . >/dev/null 2>&1 || true
-          cp dist/Image.gz-dtb dist/config.txt dist/build.log . 2>/dev/null || true
-          git add -f Image.gz-dtb config.txt build.log
-          git commit -m "kernel build $(date -u +%Y%m%dT%H%M%SZ)" || true
-          git push --force origin artifacts
+          git checkout main
+          mkdir -p dist-built
+          cp dist/Image.gz-dtb dist/config.txt dist-built/
+          git add -f dist-built/
+          git commit -m "built kernel $(date -u +%Y%m%dT%H%M%SZ)" || echo "nothing to commit"
+          git push origin main
