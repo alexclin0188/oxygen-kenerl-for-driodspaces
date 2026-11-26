@@ -1,5 +1,8 @@
 name: Build oxygen kernel 4.19 with DroidSpaces
 
+permissions:
+  contents: write
+
 on:
   workflow_dispatch:
   push:
@@ -138,10 +141,10 @@ jobs:
           cd "$GITHUB_WORKSPACE"
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git checkout --orphan artifacts-branch
-          git rm -rf --cached . >/dev/null 2>&1 || true
-          rm -rf .github README.md droidspaces.config android_kernel_xiaomi_oxygen AnyKernel3
-          cp -r dist/* .
-          git add -f Image.gz-dtb config.txt
+          git fetch origin artifacts || true
+          git checkout -B artifacts
+          git rm -rf . >/dev/null 2>&1 || true
+          cp dist/Image.gz-dtb dist/config.txt dist/build.log . 2>/dev/null || true
+          git add -f Image.gz-dtb config.txt build.log
           git commit -m "kernel build $(date -u +%Y%m%dT%H%M%SZ)" || true
-          git push --force origin HEAD:artifacts
+          git push --force origin artifacts
