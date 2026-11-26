@@ -133,4 +133,15 @@ jobs:
           path: dist/
           if-no-files-found: error
 
-# trigger rebuild 1795699596
+      - name: Push built kernel to artifacts branch
+        run: |
+          cd "$GITHUB_WORKSPACE"
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git checkout --orphan artifacts-branch
+          git rm -rf --cached . >/dev/null 2>&1 || true
+          rm -rf .github README.md droidspaces.config android_kernel_xiaomi_oxygen AnyKernel3
+          cp -r dist/* .
+          git add -f Image.gz-dtb config.txt
+          git commit -m "kernel build $(date -u +%Y%m%dT%H%M%SZ)" || true
+          git push --force origin HEAD:artifacts
