@@ -74,6 +74,25 @@ jobs:
           if [ "$FAIL" != "0" ]; then exit 1; fi
           echo "--- All DroidSpaces options enabled ---"
 
+          echo "--- FCM 5 (kernel 4.19) compliance check ---"
+          # FCM 5 requires these to be OFF. Leaving them on makes
+          # VintfObject.verifyWithoutAvb() return 1 and Android shows the
+          # "your device has an internal problem" dialog at every boot.
+          for opt in FHANDLE IP6_NF_NAT IP6_NF_TARGET_MASQUERADE; do
+            if grep -q "^CONFIG_${opt}=y" out/.config; then
+              echo "::error::CONFIG_${opt} must be OFF for FCM 5 compliance"
+              FAIL=1
+            else
+              echo "  OK: CONFIG_${opt} is off"
+            fi
+          done
+          # SYSVIPC is a deliberate deviation (DroidSpaces needs it); report only.
+          if grep -q "^CONFIG_SYSVIPC=y" out/.config; then
+            echo "  NOTE: CONFIG_SYSVIPC=y is a deliberate FCM 5 deviation for DroidSpaces IPC namespaces"
+          fi
+          if [ "$FAIL" != "0" ]; then exit 1; fi
+          echo "--- FCM 5 check passed (only SYSVIPC deviates, by design) ---"
+
       - name: Apply Droidspaces kernel patches (non-GKI)
         working-directory: ${{ env.KERNEL_DIR }}
         run: |
